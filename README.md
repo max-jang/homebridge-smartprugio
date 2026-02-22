@@ -91,6 +91,10 @@ Homebridge 설치 후 `~/.homebridge` 내 설정을 수정해야 합니다.
 > `token`/`auth`는 환경변수로도 설정 가능합니다:  
 > `SMARTPRUGIO_TOKEN`, `SMARTPRUGIO_AUTH`
 
+## 사용 예시
+
+![HomeKit 예시](image/homekit.png)
+
 ## 제약 사항
 
 - 보일러는 **난방만 지원**합니다. HomeKit의 냉방/자동 선택은 HEAT로 강제됩니다.
