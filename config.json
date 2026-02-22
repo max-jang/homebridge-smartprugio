@@ -1,0 +1,30 @@
+{
+    "bridge": {
+        "name": "Homebridge",
+        "username": "0E:EE:93:A4:1A:77",
+        "port": 51300,
+        "pin": "968-65-364",
+        "advertiser": "bonjour-hap"
+    },
+    "accessories": [
+        {
+            "accessory": "SmartPrugioLight",
+            "name": "방3 조명1",
+            "deviceId": "Lt03_pow01",
+            "pollIntervalSec": 2
+        },
+        {
+            "accessory": "SmartPrugioThermostat",
+            "name": "방3 보일러",
+            "deviceId": "Ht03",
+            "pollIntervalSec": 2
+        }
+    ],
+    "platforms": [
+        {
+            "name": "Config",
+            "port": 8581,
+            "platform": "config"
+        }
+    ]
+}
