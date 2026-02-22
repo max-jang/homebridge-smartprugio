@@ -18,6 +18,7 @@
 
 ## 동작 개요
 
+- 사용자 token, auth 및 추가 API는 사용자가 직접 추가하여 `index.js`에 반영해야 합니다.
 - `https://svc.smartprugio.com:18888` 비공식 Endpoint API를 사용합니다.
 - `ctl_tp_cd=LIGHTS` / `ctl_tp_cd=HEATING`으로 기기 상태 조회 및 제어를 수행합니다.
 - 보일러는 난방을 위한 장치임으로 홈킷 앱 내 **냉방/자동 모드 미지원**이며, HomeKit에서 해당 상태 선택 시 **HEAT로 강제**됩니다.
