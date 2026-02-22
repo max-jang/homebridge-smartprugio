@@ -1,7 +1,9 @@
 # homebridge-smartprugio
 푸르지오 스마트홈 비공식 API로 보일러/전등을 Homebridge(HomeKit)에서 제어하는 플러그인
 
-푸르지오 스마트홈(비공식 API)과 Homebridge를 연동해 **보일러(난방)**와 **전등**을 HomeKit에서 제어하는 플러그인입니다.
+푸르지오 스마트홈(비공식 API)과 Homebridge를 연동해 보일러(난방)와 전등을 HomeKit에서 제어하는 플러그인입니다.
+
+클리앙 글(https://www.clien.net/service/board/cm_iot/15914856)를 참고하여 개발했습니다.
 
 > ⚠️ 비공식 API를 사용합니다. 제조사 정책/서버 변경에 따라 동작이 중단될 수 있습니다.
 > 
