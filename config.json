@@ -11,12 +11,16 @@
             "accessory": "SmartPrugioLight",
             "name": "방3 조명1",
             "deviceId": "Lt03_pow01",
+            "token": "",
+            "auth": "",
             "pollIntervalSec": 2
         },
         {
             "accessory": "SmartPrugioThermostat",
             "name": "방3 보일러",
             "deviceId": "Ht03",
+            "token": "",
+            "auth": "",
             "pollIntervalSec": 2
         }
     ],

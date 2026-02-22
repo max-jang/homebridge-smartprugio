@@ -48,6 +48,7 @@ Homebridge 설치 후 `~/.homebridge` 내 설정을 수정해야 합니다.
 ## 설정
 
 사용 전에 **본인의 푸르지오 계정으로 `auth`/`token`을 직접 추출**해야 합니다.
+`~/.homebridge/config.json`의 `accessories`에 `token`/`auth` 값을 채워 넣어야 정상 동작합니다.
 `~/.homebridge/config.json`의 `accessories`에 아래와 같이 추가합니다.
 
 ### 전등 예시
