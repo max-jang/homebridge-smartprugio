@@ -64,6 +64,25 @@ npm install
 npm install -g .
 ```
 
+### 재설치 / 업데이트
+
+코드 수정 후 반영할 때는 아래 순서로 진행합니다.
+
+```bash
+cd /path/to/homebridge-smartprugio
+npm install
+npm uninstall -g homebridge-smartprugio
+npm install -g .
+sudo hb-service restart
+```
+
+> `hb-service`를 쓰지 않고 수동 실행 중이면, 기존 Homebridge 프로세스를 종료 후 다시 실행하세요.
+>  
+> ```bash
+> pkill -f "^homebridge$"
+> homebridge -I -U ~/.homebridge
+> ```
+
 Homebridge 설치 후 `~/.homebridge` 내 설정을 수정해야 합니다.
 - `~/.homebridge/config.json`에 액세서리 설정 추가
 - `~/.homebridge/index.js`에 플러그인 로드/등록 반영

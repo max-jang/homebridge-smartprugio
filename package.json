@@ -2,7 +2,9 @@
   "name": "homebridge-smartprugio",
   "version": "0.0.2",
   "main": "index.js",
-  "keywords": ["homebridge-plugin"],
+  "keywords": [
+    "homebridge-plugin"
+  ],
   "license": "MIT",
   "engines": {
     "node": ">=18",
