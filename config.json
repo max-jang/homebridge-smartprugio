@@ -9,19 +9,19 @@
     "accessories": [
         {
             "accessory": "SmartPrugioLight",
-            "name": "방3 조명1",
+            "name": "Light",
             "deviceId": "Lt03_pow01",
             "pollIntervalSec": 1
         },
         {
             "accessory": "SmartPrugioThermostat",
-            "name": "방3 보일러",
+            "name": "Boiler",
             "deviceId": "Ht03",
             "pollIntervalSec": 1
         },
         {
             "accessory": "SmartPrugioAirConditioner",
-            "name": "방3 에어컨",
+            "name": "Air Conditioner",
             "deviceId": "Ac03",
             "pollIntervalSec": 1
         }

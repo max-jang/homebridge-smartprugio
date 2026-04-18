@@ -42,6 +42,28 @@ sudo hb-service install
 npm install homebridge-smartprugio
 ```
 
+> 참고: 현재 npm 레지스트리에 패키지가 없거나 private 상태면 위 명령이 실패할 수 있습니다.  
+> 이 경우 아래 "Git 폴더에서 설치" 방법을 사용하세요.
+
+### Git 폴더에서 설치(권장)
+
+저장소를 클론한 뒤, 해당 폴더를 전역 설치하면 됩니다.
+
+```bash
+git clone <YOUR_REPO_URL> homebridge-smartprugio
+cd homebridge-smartprugio
+npm install
+npm install -g .
+```
+
+이미 클론된 폴더가 있다면:
+
+```bash
+cd /path/to/homebridge-smartprugio
+npm install
+npm install -g .
+```
+
 Homebridge 설치 후 `~/.homebridge` 내 설정을 수정해야 합니다.
 - `~/.homebridge/config.json`에 액세서리 설정 추가
 - `~/.homebridge/index.js`에 플러그인 로드/등록 반영
@@ -50,7 +72,8 @@ Homebridge 설치 후 `~/.homebridge` 내 설정을 수정해야 합니다.
 ## 설정
 
 사용 전에 **본인의 푸르지오 계정으로 `auth`/`token`을 직접 추출**해야 합니다.
-`~/.homebridge/config.json`의 `accessories`에 `token`/`auth` 값을 채워 넣어야 정상 동작합니다.
+`token`/`auth`는 액세서리별로 넣을 수도 있고, 환경변수로 공통 설정할 수도 있습니다.
+단건 액세서리 방식(`accessories`) 또는 다중 일괄 방식(`platforms > SmartPrugioPlatform`) 중 하나를 선택해 사용할 수 있습니다.
 `~/.homebridge/config.json`의 `accessories`에 아래와 같이 추가합니다.
 
 ### 전등 예시
@@ -66,6 +89,41 @@ Homebridge 설치 후 `~/.homebridge` 내 설정을 수정해야 합니다.
   "minControlIntervalMs": 600
 }
 ```
+
+### 다중 일괄 등록(Platform) 예시
+
+한 번의 플랫폼 블록으로 여러 기기를 등록할 수 있습니다.
+
+```json
+{
+  "platform": "SmartPrugioPlatform",
+  "name": "Prugio Devices",
+  "token": "YOUR_TOKEN",
+  "auth": "YOUR_BASIC_AUTH",
+  "pollIntervalSec": 10,
+  "minControlIntervalMs": 600,
+  "devices": [
+    {
+      "accessory": "SmartPrugioLight",
+      "name": "거실 전등",
+      "deviceId": "Lt03_pow01"
+    },
+    {
+      "accessory": "SmartPrugioThermostat",
+      "name": "거실 보일러",
+      "deviceId": "Ht03"
+    },
+    {
+      "accessory": "SmartPrugioAirConditioner",
+      "name": "방3 에어컨",
+      "deviceId": "Ac03"
+    }
+  ]
+}
+```
+
+> `devices[].accessory`는 `SmartPrugioLight`, `SmartPrugioThermostat`, `SmartPrugioAirConditioner`를 권장합니다.  
+> 하위 호환으로 `SmartPrugioAircon`도 인식합니다.
 
 ### 보일러(난방) 예시
 
@@ -105,7 +163,7 @@ Homebridge 설치 후 `~/.homebridge` 내 설정을 수정해야 합니다.
 - `auth` (필수): Basic 인증 문자열 (헤더 `Authorization`)
 - `pollIntervalSec` (기본 10): 상태 폴링 주기(초). `0`이면 폴링 비활성화
 - `minControlIntervalMs` (기본 600): 제어 요청 디바운스(밀리초)
-- `cacheMaxAgeMs` (기본 2500): 캐시를 신선하다고 보는 최대 시간(밀리초). 초과 시 백그라운드 재조회
+- `cacheMaxAgeMs` (기본 900): 캐시를 신선하다고 보는 최대 시간(밀리초). 초과 시 백그라운드 재조회
 - `controlSyncWindowMs` (기본 2200): 제어 직후 서버 지연값으로 UI가 되돌아가지 않도록 보호하는 시간(밀리초)
 - `baseUrl` (기본 `https://svc.smartprugio.com:18888`): API 베이스 URL
 - `appVersion` (기본 `1.7.0-v84`): 요청 헤더에 포함되는 앱 버전
@@ -113,6 +171,58 @@ Homebridge 설치 후 `~/.homebridge` 내 설정을 수정해야 합니다.
 
 > `token`/`auth`는 환경변수로도 설정 가능합니다:  
 > `SMARTPRUGIO_TOKEN`, `SMARTPRUGIO_AUTH`
+
+## 환경변수 설정
+
+### 1) 터미널(zsh) 공통 설정
+
+`~/.zshrc`에 아래를 추가:
+
+```bash
+export SMARTPRUGIO_TOKEN="YOUR_TOKEN"
+export SMARTPRUGIO_AUTH="YOUR_BASIC_AUTH"
+```
+
+적용:
+
+```bash
+source ~/.zshrc
+```
+
+### 2) Homebridge 서비스(hb-service) 공통 설정
+
+`hb-service`로 실행 중이면, 아래 파일에 넣으면 서비스 시작 시 자동 반영됩니다.
+
+파일: `~/.homebridge/.uix-hb-service-homebridge-startup.json`
+
+```json
+{
+  "env": {
+    "SMARTPRUGIO_TOKEN": "YOUR_TOKEN",
+    "SMARTPRUGIO_AUTH": "YOUR_BASIC_AUTH"
+  }
+}
+```
+
+반영을 위해 Homebridge 서비스 재시작:
+
+```bash
+sudo hb-service restart
+```
+
+> macOS에서는 `hb-service restart`에 `sudo`가 필요합니다.
+
+### 3) config.json에서 token/auth 제거(환경변수 사용 시)
+
+환경변수 공통 설정을 사용할 경우, 각 액세서리/디바이스의 `token`, `auth`는 생략해도 됩니다.
+
+## 추천 운영 구성
+
+실사용에서는 아래 조합을 권장합니다.
+
+1. 플러그인 설치: `npm install -g .` (Git 폴더 내)
+2. 토큰 설정: 환경변수(`SMARTPRUGIO_TOKEN`, `SMARTPRUGIO_AUTH`)
+3. 기기 등록: `platforms`의 `SmartPrugioPlatform` + `devices[]` 배열
 
 ## 사용 예시
 

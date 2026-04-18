@@ -48,10 +48,7 @@ module.exports = (homebridge) => {
   // -------------------------
   // 액세서리: 전등
   // -------------------------
-  homebridge.registerAccessory(
-      "homebridge-smartprugio",
-      "SmartPrugioLight",
-      class SmartPrugioLight {
+  class SmartPrugioLight {
         constructor(log, config) {
           this.log = log;
           this.name = config.name;
@@ -66,7 +63,7 @@ module.exports = (homebridge) => {
           // UI 표시용 캐시(통신 실패 시 마지막 상태 유지)
           this.cachedOn = false;
           this.lastStateAt = 0;
-          this.cacheMaxAgeMs = config.cacheMaxAgeMs ?? 2500;
+          this.cacheMaxAgeMs = config.cacheMaxAgeMs ?? 900;
           this.controlSyncWindowMs = config.controlSyncWindowMs ?? 2200;
           this.pendingPower = null;
           this.pendingPowerUntil = 0;
@@ -153,7 +150,7 @@ module.exports = (homebridge) => {
 
           if (!this.debouncer.allow()) {
             // 요청 간격이 너무 짧으면 캐시를 유지하고 짧게 재조회 예약
-            setTimeout(() => this.refreshState().catch(() => {}), 500);
+            setTimeout(() => this.refreshState().catch(() => {}), 250);
             return;
           }
 
@@ -182,8 +179,9 @@ module.exports = (homebridge) => {
             this.log(`LIGHTS 제어 접수: ${JSON.stringify(res.data)}`);
           } finally {
             // 제어 결과와 무관하게 다단계 재조회(서버 반영 지연/실패 대응)
+            setTimeout(() => this.refreshState().catch(() => {}), 150);
             setTimeout(() => this.refreshState().catch(() => {}), 450);
-            setTimeout(() => this.refreshState().catch(() => {}), 1400);
+            setTimeout(() => this.refreshState().catch(() => {}), 1000);
           }
         }
 
@@ -228,6 +226,11 @@ module.exports = (homebridge) => {
           }
         }
       }
+
+  homebridge.registerAccessory(
+      "homebridge-smartprugio",
+      "SmartPrugioLight",
+      SmartPrugioLight
   );
 
   // -------------------------
@@ -236,10 +239,7 @@ module.exports = (homebridge) => {
   // - POWER + HTEMPERATURE만 사용
   // - Cool/Auto는 HEAT로 강제
   // -------------------------
-  homebridge.registerAccessory(
-      "homebridge-smartprugio",
-      "SmartPrugioThermostat",
-      class SmartPrugioThermostat {
+  class SmartPrugioThermostat {
         constructor(log, config) {
           this.log = log;
           this.name = config.name;
@@ -258,7 +258,7 @@ module.exports = (homebridge) => {
           this.cachedTargetTemp = 22;
           this.cachedActive = false;
           this.lastStateAt = 0;
-          this.cacheMaxAgeMs = config.cacheMaxAgeMs ?? 2500;
+          this.cacheMaxAgeMs = config.cacheMaxAgeMs ?? 900;
           this.controlSyncWindowMs = config.controlSyncWindowMs ?? 2200;
           this.pendingActive = null;
           this.pendingActiveUntil = 0;
@@ -423,7 +423,7 @@ module.exports = (homebridge) => {
           );
 
           if (!this.debouncer.allow()) {
-            setTimeout(() => this.refreshState().catch(() => {}), 500);
+            setTimeout(() => this.refreshState().catch(() => {}), 250);
             return;
           }
 
@@ -435,8 +435,9 @@ module.exports = (homebridge) => {
             ]);
           } finally {
             // 제어 결과와 무관하게 다단계 재조회(서버 반영 지연/실패 대응)
+            setTimeout(() => this.refreshState().catch(() => {}), 150);
             setTimeout(() => this.refreshState().catch(() => {}), 450);
-            setTimeout(() => this.refreshState().catch(() => {}), 1400);
+            setTimeout(() => this.refreshState().catch(() => {}), 1000);
           }
         }
 
@@ -468,13 +469,22 @@ module.exports = (homebridge) => {
           );
 
           if (!this.debouncer.allow()) {
-            setTimeout(() => this.refreshState().catch(() => {}), 500);
+            setTimeout(() => this.refreshState().catch(() => {}), 250);
             return;
           }
 
           try {
-            // POWER만 제어
-            await this.controlMany([["POWER", on ? "ON" : "OFF"]]);
+            if (on) {
+              const target = Math.max(5, Math.min(40, this.cachedTargetTemp));
+              // 에어컨과 동일하게 ON 시 현재 목표온도를 함께 전송
+              await this.controlMany([
+                ["POWER", "ON"],
+                ["HTEMPERATURE", target],
+              ]);
+            } else {
+              // OFF는 POWER만 전송
+              await this.controlMany([["POWER", "OFF"]]);
+            }
 
             // 켜질 때 UI 상태를 HEAT로 즉시 강제
             if (on) {
@@ -485,8 +495,9 @@ module.exports = (homebridge) => {
             }
           } finally {
             // 제어 결과와 무관하게 다단계 재조회(서버 반영 지연/실패 대응)
+            setTimeout(() => this.refreshState().catch(() => {}), 150);
             setTimeout(() => this.refreshState().catch(() => {}), 450);
-            setTimeout(() => this.refreshState().catch(() => {}), 1400);
+            setTimeout(() => this.refreshState().catch(() => {}), 1000);
           }
         }
 
@@ -608,6 +619,11 @@ module.exports = (homebridge) => {
           }
         }
       }
+
+  homebridge.registerAccessory(
+      "homebridge-smartprugio",
+      "SmartPrugioThermostat",
+      SmartPrugioThermostat
   );
 
   // -------------------------
@@ -616,10 +632,7 @@ module.exports = (homebridge) => {
   // - POWER + HTEMPERATURE만 사용
   // - Heat/Auto는 COOL로 강제
   // -------------------------
-  homebridge.registerAccessory(
-      "homebridge-smartprugio",
-      "SmartPrugioAirConditioner",
-      class SmartPrugioAirConditioner {
+  class SmartPrugioAirConditioner {
         constructor(log, config) {
           this.log = log;
           this.name = config.name;
@@ -638,7 +651,7 @@ module.exports = (homebridge) => {
           this.cachedTargetTemp = 24;
           this.cachedActive = false;
           this.lastStateAt = 0;
-          this.cacheMaxAgeMs = config.cacheMaxAgeMs ?? 2500;
+          this.cacheMaxAgeMs = config.cacheMaxAgeMs ?? 900;
           this.controlSyncWindowMs = config.controlSyncWindowMs ?? 2200;
           this.pendingActive = null;
           this.pendingActiveUntil = 0;
@@ -803,7 +816,7 @@ module.exports = (homebridge) => {
           );
 
           if (!this.debouncer.allow()) {
-            setTimeout(() => this.refreshState().catch(() => {}), 500);
+            setTimeout(() => this.refreshState().catch(() => {}), 250);
             return;
           }
 
@@ -815,8 +828,9 @@ module.exports = (homebridge) => {
             ]);
           } finally {
             // 제어 결과와 무관하게 다단계 재조회(서버 반영 지연/실패 대응)
+            setTimeout(() => this.refreshState().catch(() => {}), 150);
             setTimeout(() => this.refreshState().catch(() => {}), 450);
-            setTimeout(() => this.refreshState().catch(() => {}), 1400);
+            setTimeout(() => this.refreshState().catch(() => {}), 1000);
           }
         }
 
@@ -848,7 +862,7 @@ module.exports = (homebridge) => {
           );
 
           if (!this.debouncer.allow()) {
-            setTimeout(() => this.refreshState().catch(() => {}), 500);
+            setTimeout(() => this.refreshState().catch(() => {}), 250);
             return;
           }
 
@@ -873,8 +887,9 @@ module.exports = (homebridge) => {
             }
           } finally {
             // 제어 결과와 무관하게 다단계 재조회(서버 반영 지연/실패 대응)
+            setTimeout(() => this.refreshState().catch(() => {}), 150);
             setTimeout(() => this.refreshState().catch(() => {}), 450);
-            setTimeout(() => this.refreshState().catch(() => {}), 1400);
+            setTimeout(() => this.refreshState().catch(() => {}), 1000);
           }
         }
 
@@ -996,5 +1011,107 @@ module.exports = (homebridge) => {
           }
         }
       }
+
+  homebridge.registerAccessory(
+      "homebridge-smartprugio",
+      "SmartPrugioAirConditioner",
+      SmartPrugioAirConditioner
+  );
+  // 하위 호환: 기존 이름도 계속 지원
+  homebridge.registerAccessory(
+      "homebridge-smartprugio",
+      "SmartPrugioAircon",
+      SmartPrugioAirConditioner
+  );
+
+  // -------------------------
+  // 플랫폼: 다중 기기 일괄 등록(devices 배열)
+  // -------------------------
+  const ACCESSORY_CTORS = {
+    SmartPrugioLight,
+    SmartPrugioThermostat,
+    SmartPrugioAirConditioner,
+  };
+
+  const ACCESSORY_ALIASES = {
+    light: "SmartPrugioLight",
+    lights: "SmartPrugioLight",
+    thermostat: "SmartPrugioThermostat",
+    heating: "SmartPrugioThermostat",
+    smartprugiolight: "SmartPrugioLight",
+    smartprugiothermostat: "SmartPrugioThermostat",
+    smartprugioairconditioner: "SmartPrugioAirConditioner",
+    smartprugioaircon: "SmartPrugioAirConditioner",
+    airconditioner: "SmartPrugioAirConditioner",
+    air_conditioner: "SmartPrugioAirConditioner",
+    aircon: "SmartPrugioAirConditioner",
+  };
+
+  class SmartPrugioPlatform {
+    constructor(log, config) {
+      this.log = log;
+      this.config = config || {};
+      this.name = this.config.name || "SmartPrugio Platform";
+    }
+
+    accessories(callback) {
+      const shared = {
+        token: this.config.token,
+        auth: this.config.auth,
+        baseUrl: this.config.baseUrl,
+        appVersion: this.config.appVersion,
+        userAgent: this.config.userAgent,
+        pollIntervalSec: this.config.pollIntervalSec,
+        minControlIntervalMs: this.config.minControlIntervalMs,
+        cacheMaxAgeMs: this.config.cacheMaxAgeMs,
+        controlSyncWindowMs: this.config.controlSyncWindowMs,
+      };
+
+      const devices = Array.isArray(this.config.devices)
+          ? this.config.devices
+          : [];
+      const out = [];
+
+      for (const d of devices) {
+        const rawType = String(
+            d.accessory || d.type || d.deviceType || ""
+        ).trim();
+        const normalized = rawType.replace(/[^a-zA-Z_]/g, "").toLowerCase();
+        const accessoryName = ACCESSORY_CTORS[rawType]
+            ? rawType
+            : ACCESSORY_ALIASES[normalized];
+
+        if (!accessoryName || !ACCESSORY_CTORS[accessoryName]) {
+          this.log(
+              `[${this.name}] Unsupported device type: ${rawType || "(empty)"}. ` +
+              `Use SmartPrugioLight | SmartPrugioThermostat | SmartPrugioAirConditioner`
+          );
+          continue;
+        }
+        if (!d.name || !d.deviceId) {
+          this.log(
+              `[${this.name}] Skip device: missing name/deviceId (${JSON.stringify(d)})`
+          );
+          continue;
+        }
+
+        const mergedConfig = {
+          ...shared,
+          ...d,
+          accessory: accessoryName,
+        };
+        const Ctor = ACCESSORY_CTORS[accessoryName];
+        out.push(new Ctor(this.log, mergedConfig));
+      }
+
+      this.log(`[${this.name}] Loaded ${out.length} SmartPrugio devices.`);
+      callback(out);
+    }
+  }
+
+  homebridge.registerPlatform(
+      "homebridge-smartprugio",
+      "SmartPrugioPlatform",
+      SmartPrugioPlatform
   );
 };
