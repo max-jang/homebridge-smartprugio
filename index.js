@@ -1,5 +1,5 @@
 // index.js (homebridge-smartprugio)
-// 전등(LIGHTS) + 보일러(HEATING) 액세서리를 한 파일에 통합
+// 전등(LIGHTS) + 보일러(HEATING) + 에어컨(AIRCON) 액세서리를 한 파일에 통합
 // 보일러는 POWER + HTEMPERATURE만 지원(모드 제어 없음)
 // Thermostat UI의 Cool/Auto는 지원하지 않으므로 HEAT로 강제
 // 과도한 요청을 막기 위해 디바운스를 적용
@@ -65,6 +65,12 @@ module.exports = (homebridge) => {
 
           // UI 표시용 캐시(통신 실패 시 마지막 상태 유지)
           this.cachedOn = false;
+          this.lastStateAt = 0;
+          this.cacheMaxAgeMs = config.cacheMaxAgeMs ?? 2500;
+          this.controlSyncWindowMs = config.controlSyncWindowMs ?? 2200;
+          this.pendingPower = null;
+          this.pendingPowerUntil = 0;
+          this.refreshPromise = null;
           this.debouncer = new Debouncer(config.minControlIntervalMs ?? 600);
 
           // 주기적 폴링(0이면 비활성화)
@@ -75,6 +81,9 @@ module.exports = (homebridge) => {
                 this.pollIntervalSec * 1000
             );
           }
+
+          // 초기 상태를 빠르게 확보
+          setTimeout(() => this.refreshState().catch(() => {}), 300);
 
           this.log(`Initializing SmartPrugioLight accessory...`);
         }
@@ -129,28 +138,22 @@ module.exports = (homebridge) => {
 
         // HomeKit에서 전등 상태 조회 시 호출
         async handleGetOn() {
-          try {
-            const payload = await this.fetchLights();
-            const v = this.extractPower(payload);
-
-            if (v === "ON") this.cachedOn = true;
-            else if (v === "OFF") this.cachedOn = false;
-
-            // 핵심: GET 성공 시 HomeKit 표시를 즉시 갱신
-            this.service?.updateCharacteristic(Characteristic.On, this.cachedOn);
-
-            return this.cachedOn;
-          } catch (e) {
-            this.log(`LIGHTS GET 실패: ${e?.message || e}`);
-            return this.cachedOn;
-          }
+          const stale = Date.now() - this.lastStateAt > this.cacheMaxAgeMs;
+          if (stale) this.refreshState().catch(() => {});
+          return this.cachedOn;
         }
 
         // HomeKit에서 전등 상태 변경 시 호출
         async handleSetOn(value) {
+          const nextOn = !!value;
+          this.cachedOn = nextOn;
+          this.pendingPower = nextOn;
+          this.pendingPowerUntil = Date.now() + this.controlSyncWindowMs;
+          this.service?.updateCharacteristic(Characteristic.On, this.cachedOn);
+
           if (!this.debouncer.allow()) {
-            // 요청 간격이 너무 짧으면 캐시만 반영하고 종료
-            this.cachedOn = !!value;
+            // 요청 간격이 너무 짧으면 캐시를 유지하고 짧게 재조회 예약
+            setTimeout(() => this.refreshState().catch(() => {}), 500);
             return;
           }
 
@@ -162,40 +165,66 @@ module.exports = (homebridge) => {
             device_tp_cd: "LIGHTS",
             device_id: this.deviceId,
             device_attr_list: [
-              { device_attr_cd: "POWER", set_cont: value ? "ON" : "OFF" },
+              { device_attr_cd: "POWER", set_cont: nextOn ? "ON" : "OFF" },
             ],
           };
 
-          const res = await axios.post(url, payload, {
-            headers: buildHeaders(
-                this.appVersion,
-                this.userAgent,
-                this.token,
-                this.auth
-            ),
-            timeout: 5000,
-          });
-
-          this.log(`LIGHTS 제어 접수: ${JSON.stringify(res.data)}`);
-          this.cachedOn = !!value;
-
-          // 제어 후 짧은 지연 뒤 실제 상태 재조회
-          setTimeout(() => this.refreshState().catch(() => {}), 800);
+          try {
+            const res = await axios.post(url, payload, {
+              headers: buildHeaders(
+                  this.appVersion,
+                  this.userAgent,
+                  this.token,
+                  this.auth
+              ),
+              timeout: 5000,
+            });
+            this.log(`LIGHTS 제어 접수: ${JSON.stringify(res.data)}`);
+          } finally {
+            // 제어 결과와 무관하게 다단계 재조회(서버 반영 지연/실패 대응)
+            setTimeout(() => this.refreshState().catch(() => {}), 450);
+            setTimeout(() => this.refreshState().catch(() => {}), 1400);
+          }
         }
 
         // 전등 상태를 강제로 재조회하여 캐시/표시 동기화
         async refreshState() {
+          if (this.refreshPromise) return this.refreshPromise;
+
+          this.refreshPromise = (async () => {
           try {
             const payload = await this.fetchLights();
             const v = this.extractPower(payload);
-            this.log(`LIGHTS status ${this.deviceId}: ${v}`);
+            this.lastStateAt = Date.now();
 
-            if (v === "ON") this.cachedOn = true;
-            else if (v === "OFF") this.cachedOn = false;
+            if (v === "ON" || v === "OFF") {
+              const serverOn = v === "ON";
+              const pending =
+                  this.pendingPower !== null &&
+                  Date.now() < this.pendingPowerUntil &&
+                  serverOn !== this.pendingPower;
+
+              if (!pending) {
+                this.cachedOn = serverOn;
+                if (
+                    this.pendingPower !== null &&
+                    serverOn === this.pendingPower
+                ) {
+                  this.pendingPower = null;
+                }
+              }
+            }
 
             this.service?.updateCharacteristic(Characteristic.On, this.cachedOn);
           } catch {
             // 폴링 실패는 무시(다음 주기에 재시도)
+          }
+          })();
+
+          try {
+            await this.refreshPromise;
+          } finally {
+            this.refreshPromise = null;
           }
         }
       }
@@ -228,6 +257,14 @@ module.exports = (homebridge) => {
           this.cachedCurrentTemp = 20;
           this.cachedTargetTemp = 22;
           this.cachedActive = false;
+          this.lastStateAt = 0;
+          this.cacheMaxAgeMs = config.cacheMaxAgeMs ?? 2500;
+          this.controlSyncWindowMs = config.controlSyncWindowMs ?? 2200;
+          this.pendingActive = null;
+          this.pendingActiveUntil = 0;
+          this.pendingTargetTemp = null;
+          this.pendingTargetTempUntil = 0;
+          this.refreshPromise = null;
 
           // 주기적 폴링(0이면 비활성화)
           this.pollIntervalSec = config.pollIntervalSec ?? 10;
@@ -237,6 +274,9 @@ module.exports = (homebridge) => {
                 this.pollIntervalSec * 1000
             );
           }
+
+          // 초기 상태를 빠르게 확보
+          setTimeout(() => this.refreshState().catch(() => {}), 300);
 
           this.log(`Initializing SmartPrugioThermostat accessory...`);
         }
@@ -345,38 +385,16 @@ module.exports = (homebridge) => {
 
         // HomeKit에서 현재 온도 조회 시 호출
         async handleGetCurrentTemp() {
-          try {
-            const payload = await this.fetchHeating();
-            const a = this.extractAttrs(payload);
-            if (!a) return this.cachedCurrentTemp;
-
-            const ct = Number(a.CT);
-            // 0 또는 비정상 값이면 캐시 유지
-            if (Number.isFinite(ct) && ct > 0) this.cachedCurrentTemp = ct;
-
-            return this.cachedCurrentTemp;
-          } catch (e) {
-            this.log(`HEATING 현재온도 GET 실패: ${e?.message || e}`);
-            return this.cachedCurrentTemp;
-          }
+          const stale = Date.now() - this.lastStateAt > this.cacheMaxAgeMs;
+          if (stale) this.refreshState().catch(() => {});
+          return this.cachedCurrentTemp;
         }
 
         // HomeKit에서 목표 온도 조회 시 호출
         async handleGetTargetTemp() {
-          try {
-            const payload = await this.fetchHeating();
-            const a = this.extractAttrs(payload);
-            if (!a) return this.cachedTargetTemp;
-
-            const ht = Number(a.HT);
-            if (Number.isFinite(ht) && ht >= 5 && ht <= 40)
-              this.cachedTargetTemp = ht;
-
-            return this.cachedTargetTemp;
-          } catch (e) {
-            this.log(`HEATING 목표온도 GET 실패: ${e?.message || e}`);
-            return this.cachedTargetTemp;
-          }
+          const stale = Date.now() - this.lastStateAt > this.cacheMaxAgeMs;
+          if (stale) this.refreshState().catch(() => {});
+          return this.cachedTargetTemp;
         }
 
         // HomeKit에서 목표 온도 변경 시 호출
@@ -386,56 +404,90 @@ module.exports = (homebridge) => {
 
           this.cachedTargetTemp = v;
           this.cachedActive = true;
+          this.pendingTargetTemp = v;
+          this.pendingTargetTempUntil = Date.now() + this.controlSyncWindowMs;
+          this.pendingActive = true;
+          this.pendingActiveUntil = Date.now() + this.controlSyncWindowMs;
+          this.service?.updateCharacteristic(
+              Characteristic.TargetTemperature,
+              this.cachedTargetTemp
+          );
+          this.service?.updateCharacteristic(Characteristic.Active, 1);
+          this.service?.updateCharacteristic(
+              Characteristic.TargetHeatingCoolingState,
+              Characteristic.TargetHeatingCoolingState.HEAT
+          );
+          this.service?.updateCharacteristic(
+              Characteristic.CurrentHeatingCoolingState,
+              Characteristic.CurrentHeatingCoolingState.HEAT
+          );
 
-          if (!this.debouncer.allow()) return;
+          if (!this.debouncer.allow()) {
+            setTimeout(() => this.refreshState().catch(() => {}), 500);
+            return;
+          }
 
           // 한 번의 요청으로 POWER=ON + HTEMPERATURE 설정
-          await this.controlMany([
-            ["POWER", "ON"],
-            ["HTEMPERATURE", v],
-          ]);
-
-          // 제어 후 짧은 지연 뒤 실제 상태 재조회
-          setTimeout(() => this.refreshState().catch(() => {}), 800);
+          try {
+            await this.controlMany([
+              ["POWER", "ON"],
+              ["HTEMPERATURE", v],
+            ]);
+          } finally {
+            // 제어 결과와 무관하게 다단계 재조회(서버 반영 지연/실패 대응)
+            setTimeout(() => this.refreshState().catch(() => {}), 450);
+            setTimeout(() => this.refreshState().catch(() => {}), 1400);
+          }
         }
 
         // HomeKit에서 난방 ON/OFF 조회 시 호출
         async handleGetActive() {
-          try {
-            const payload = await this.fetchHeating();
-            const a = this.extractAttrs(payload);
-            if (!a) return this.cachedActive ? 1 : 0;
-
-            if (a.POWER === "ON") this.cachedActive = true;
-            else if (a.POWER === "OFF") this.cachedActive = false;
-
-            return this.cachedActive ? 1 : 0;
-          } catch (e) {
-            this.log(`HEATING Active GET 실패: ${e?.message || e}`);
-            return this.cachedActive ? 1 : 0;
-          }
+          const stale = Date.now() - this.lastStateAt > this.cacheMaxAgeMs;
+          if (stale) this.refreshState().catch(() => {});
+          return this.cachedActive ? 1 : 0;
         }
 
         // HomeKit에서 난방 ON/OFF 변경 시 호출
         async handleSetActive(value) {
           const on = Number(value) === 1;
           this.cachedActive = on;
+          this.pendingActive = on;
+          this.pendingActiveUntil = Date.now() + this.controlSyncWindowMs;
+          this.service?.updateCharacteristic(Characteristic.Active, on ? 1 : 0);
+          this.service?.updateCharacteristic(
+              Characteristic.TargetHeatingCoolingState,
+              on
+                  ? Characteristic.TargetHeatingCoolingState.HEAT
+                  : Characteristic.TargetHeatingCoolingState.OFF
+          );
+          this.service?.updateCharacteristic(
+              Characteristic.CurrentHeatingCoolingState,
+              on
+                  ? Characteristic.CurrentHeatingCoolingState.HEAT
+                  : Characteristic.CurrentHeatingCoolingState.OFF
+          );
 
-          if (!this.debouncer.allow()) return;
-
-          // POWER만 제어
-          await this.controlMany([["POWER", on ? "ON" : "OFF"]]);
-
-          // 켜질 때 UI 상태를 HEAT로 즉시 강제
-          if (on) {
-            this.service?.updateCharacteristic(
-                Characteristic.TargetHeatingCoolingState,
-                Characteristic.TargetHeatingCoolingState.HEAT
-            );
+          if (!this.debouncer.allow()) {
+            setTimeout(() => this.refreshState().catch(() => {}), 500);
+            return;
           }
 
-          // 제어 후 짧은 지연 뒤 실제 상태 재조회
-          setTimeout(() => this.refreshState().catch(() => {}), 800);
+          try {
+            // POWER만 제어
+            await this.controlMany([["POWER", on ? "ON" : "OFF"]]);
+
+            // 켜질 때 UI 상태를 HEAT로 즉시 강제
+            if (on) {
+              this.service?.updateCharacteristic(
+                  Characteristic.TargetHeatingCoolingState,
+                  Characteristic.TargetHeatingCoolingState.HEAT
+              );
+            }
+          } finally {
+            // 제어 결과와 무관하게 다단계 재조회(서버 반영 지연/실패 대응)
+            setTimeout(() => this.refreshState().catch(() => {}), 450);
+            setTimeout(() => this.refreshState().catch(() => {}), 1400);
+          }
         }
 
         // HomeKit에서 목표 모드 조회 시 호출(OFF/HEAT만 제공)
@@ -474,20 +526,51 @@ module.exports = (homebridge) => {
 
         // 보일러 상태를 강제로 재조회하여 캐시/표시 동기화
         async refreshState() {
+          if (this.refreshPromise) return this.refreshPromise;
+
+          this.refreshPromise = (async () => {
           try {
             const payload = await this.fetchHeating();
             const a = this.extractAttrs(payload);
             if (!a) return;
+            this.lastStateAt = Date.now();
 
             const ht = Number(a.HT);
-            if (Number.isFinite(ht) && ht >= 5 && ht <= 40)
-              this.cachedTargetTemp = ht;
+            if (Number.isFinite(ht) && ht >= 5 && ht <= 40) {
+              const pendingTarget =
+                  this.pendingTargetTemp !== null &&
+                  Date.now() < this.pendingTargetTempUntil &&
+                  ht !== this.pendingTargetTemp;
+              if (!pendingTarget) {
+                this.cachedTargetTemp = ht;
+                if (
+                    this.pendingTargetTemp !== null &&
+                    ht === this.pendingTargetTemp
+                ) {
+                  this.pendingTargetTemp = null;
+                }
+              }
+            }
 
             const ct = Number(a.CT);
             if (Number.isFinite(ct) && ct > 0) this.cachedCurrentTemp = ct;
 
-            if (a.POWER === "ON") this.cachedActive = true;
-            else if (a.POWER === "OFF") this.cachedActive = false;
+            if (a.POWER === "ON" || a.POWER === "OFF") {
+              const serverActive = a.POWER === "ON";
+              const pendingActive =
+                  this.pendingActive !== null &&
+                  Date.now() < this.pendingActiveUntil &&
+                  serverActive !== this.pendingActive;
+              if (!pendingActive) {
+                this.cachedActive = serverActive;
+                if (
+                    this.pendingActive !== null &&
+                    serverActive === this.pendingActive
+                ) {
+                  this.pendingActive = null;
+                }
+              }
+            }
 
             this.service?.updateCharacteristic(
                 Characteristic.TargetTemperature,
@@ -515,6 +598,401 @@ module.exports = (homebridge) => {
             );
           } catch {
             // 폴링 실패는 무시(다음 주기에 재시도)
+          }
+          })();
+
+          try {
+            await this.refreshPromise;
+          } finally {
+            this.refreshPromise = null;
+          }
+        }
+      }
+  );
+
+  // -------------------------
+  // 액세서리: 에어컨디셔너(냉방)
+  // - 모드 제어 없음
+  // - POWER + HTEMPERATURE만 사용
+  // - Heat/Auto는 COOL로 강제
+  // -------------------------
+  homebridge.registerAccessory(
+      "homebridge-smartprugio",
+      "SmartPrugioAirConditioner",
+      class SmartPrugioAirConditioner {
+        constructor(log, config) {
+          this.log = log;
+          this.name = config.name;
+          // 에어컨 장치 ID 예시: "Ac03"
+          this.deviceId = config.deviceId;
+          this.baseUrl = config.baseUrl || DEFAULT_BASE_URL;
+          this.appVersion = config.appVersion || DEFAULT_APP_VERSION;
+          this.userAgent = config.userAgent || DEFAULT_USER_AGENT;
+          this.token = config.token || process.env.SMARTPRUGIO_TOKEN;
+          this.auth = config.auth || process.env.SMARTPRUGIO_AUTH;
+
+          this.debouncer = new Debouncer(config.minControlIntervalMs ?? 600);
+
+          // UI 안정성을 위한 캐시(통신 실패 시 마지막 값 유지)
+          this.cachedCurrentTemp = 24;
+          this.cachedTargetTemp = 24;
+          this.cachedActive = false;
+          this.lastStateAt = 0;
+          this.cacheMaxAgeMs = config.cacheMaxAgeMs ?? 2500;
+          this.controlSyncWindowMs = config.controlSyncWindowMs ?? 2200;
+          this.pendingActive = null;
+          this.pendingActiveUntil = 0;
+          this.pendingTargetTemp = null;
+          this.pendingTargetTempUntil = 0;
+          this.refreshPromise = null;
+
+          // 주기적 폴링(0이면 비활성화)
+          this.pollIntervalSec = config.pollIntervalSec ?? 10;
+          if (this.pollIntervalSec > 0) {
+            setInterval(
+                () => this.refreshState().catch(() => {}),
+                this.pollIntervalSec * 1000
+            );
+          }
+
+          // 초기 상태를 빠르게 확보
+          setTimeout(() => this.refreshState().catch(() => {}), 300);
+
+          this.log(`Initializing SmartPrugioAirConditioner accessory...`);
+        }
+
+        getServices() {
+          this.informationService = new Service.AccessoryInformation()
+              .setCharacteristic(Characteristic.Manufacturer, "SmartPrugio")
+              .setCharacteristic(Characteristic.Model, "AIRCON")
+              .setCharacteristic(Characteristic.SerialNumber, this.deviceId);
+
+          this.service = new Service.Thermostat(this.name);
+
+          // 현재 온도
+          this.service
+              .getCharacteristic(Characteristic.CurrentTemperature)
+              .onGet(this.handleGetCurrentTemp.bind(this));
+
+          // 목표 온도
+          this.service
+              .getCharacteristic(Characteristic.TargetTemperature)
+              .setProps({ minValue: 18, maxValue: 30, minStep: 1 })
+              .onGet(this.handleGetTargetTemp.bind(this))
+              .onSet(this.handleSetTargetTemp.bind(this));
+
+          // 냉방 ON/OFF
+          this.service
+              .getCharacteristic(Characteristic.Active)
+              .onGet(this.handleGetActive.bind(this))
+              .onSet(this.handleSetActive.bind(this));
+
+          // 냉난방 모드(논리적으로 OFF/COOL만 사용, UI는 HEAT/AUTO 표시 가능)
+          this.service
+              .getCharacteristic(Characteristic.TargetHeatingCoolingState)
+              .onGet(this.handleGetTargetHcState.bind(this))
+              .onSet(this.handleSetTargetHcState.bind(this));
+
+          // 현재 동작 상태
+          this.service
+              .getCharacteristic(Characteristic.CurrentHeatingCoolingState)
+              .onGet(this.handleGetCurrentHcState.bind(this));
+
+          return [this.informationService, this.service];
+        }
+
+        // 에어컨 상태 목록 조회
+        async fetchAirConditioner() {
+          const url = `${this.baseUrl}/v1/control/device?certf_tp_cd=KAKAO&ctl_tp_cd=AIRCON`;
+          const res = await axios.get(url, {
+            headers: buildHeaders(
+                this.appVersion,
+                this.userAgent,
+                this.token,
+                this.auth
+            ),
+            timeout: 8000,
+          });
+          return res.data;
+        }
+
+        // 에어컨 목록에서 현재 장치의 주요 속성만 추출
+        extractAttrs(airConditionerPayload) {
+          const groups = airConditionerPayload?.[0]?.device_grp_list || [];
+          for (const g of groups) {
+            for (const d of g.device_list || []) {
+              if (d.device_id === this.deviceId) {
+                const attrs = d.device_attr_list || [];
+                const get = (code) =>
+                    attrs.find((a) => a.device_attr_cd === code)?.attr_cont;
+                return {
+                  CT: get("CTEMPERATURE"),
+                  HT: get("HTEMPERATURE"),
+                  POWER: get("POWER"),
+                };
+              }
+            }
+          }
+          return null;
+        }
+
+        // 여러 속성(POWER/HTEMPERATURE)을 한 번에 제어
+        async controlMany(attrPairs) {
+          const url = `${this.baseUrl}/v1/control/device`;
+          const payload = {
+            certf_tp_cd: "KAKAO",
+            ctl_tp_cd: "AIRCON",
+            device_tp_cd: "AIRCON",
+            device_id: this.deviceId,
+            device_attr_list: attrPairs.map(([device_attr_cd, set_cont]) => ({
+              device_attr_cd,
+              set_cont: String(set_cont),
+            })),
+          };
+
+          const res = await axios.post(url, payload, {
+            headers: buildHeaders(
+                this.appVersion,
+                this.userAgent,
+                this.token,
+                this.auth
+            ),
+            timeout: 5000,
+          });
+
+          this.log(`AIRCON 제어 접수: ${JSON.stringify(res.data)}`);
+        }
+
+        // HomeKit에서 현재 온도 조회 시 호출
+        async handleGetCurrentTemp() {
+          const stale = Date.now() - this.lastStateAt > this.cacheMaxAgeMs;
+          if (stale) this.refreshState().catch(() => {});
+          return this.cachedCurrentTemp;
+        }
+
+        // HomeKit에서 목표 온도 조회 시 호출
+        async handleGetTargetTemp() {
+          const stale = Date.now() - this.lastStateAt > this.cacheMaxAgeMs;
+          if (stale) this.refreshState().catch(() => {});
+          return this.cachedTargetTemp;
+        }
+
+        // HomeKit에서 목표 온도 변경 시 호출
+        async handleSetTargetTemp(value) {
+          const v = Math.round(Number(value));
+          if (!Number.isFinite(v)) return;
+
+          this.cachedTargetTemp = Math.max(18, Math.min(30, v));
+          this.cachedActive = true;
+          this.pendingTargetTemp = this.cachedTargetTemp;
+          this.pendingTargetTempUntil = Date.now() + this.controlSyncWindowMs;
+          this.pendingActive = true;
+          this.pendingActiveUntil = Date.now() + this.controlSyncWindowMs;
+          this.service?.updateCharacteristic(
+              Characteristic.TargetTemperature,
+              this.cachedTargetTemp
+          );
+          this.service?.updateCharacteristic(Characteristic.Active, 1);
+          this.service?.updateCharacteristic(
+              Characteristic.TargetHeatingCoolingState,
+              Characteristic.TargetHeatingCoolingState.COOL
+          );
+          this.service?.updateCharacteristic(
+              Characteristic.CurrentHeatingCoolingState,
+              Characteristic.CurrentHeatingCoolingState.COOL
+          );
+
+          if (!this.debouncer.allow()) {
+            setTimeout(() => this.refreshState().catch(() => {}), 500);
+            return;
+          }
+
+          try {
+            // 한 번의 요청으로 POWER=ON + HTEMPERATURE 설정
+            await this.controlMany([
+              ["POWER", "ON"],
+              ["HTEMPERATURE", this.cachedTargetTemp],
+            ]);
+          } finally {
+            // 제어 결과와 무관하게 다단계 재조회(서버 반영 지연/실패 대응)
+            setTimeout(() => this.refreshState().catch(() => {}), 450);
+            setTimeout(() => this.refreshState().catch(() => {}), 1400);
+          }
+        }
+
+        // HomeKit에서 냉방 ON/OFF 조회 시 호출
+        async handleGetActive() {
+          const stale = Date.now() - this.lastStateAt > this.cacheMaxAgeMs;
+          if (stale) this.refreshState().catch(() => {});
+          return this.cachedActive ? 1 : 0;
+        }
+
+        // HomeKit에서 냉방 ON/OFF 변경 시 호출
+        async handleSetActive(value) {
+          const on = Number(value) === 1;
+          this.cachedActive = on;
+          this.pendingActive = on;
+          this.pendingActiveUntil = Date.now() + this.controlSyncWindowMs;
+          this.service?.updateCharacteristic(Characteristic.Active, on ? 1 : 0);
+          this.service?.updateCharacteristic(
+              Characteristic.TargetHeatingCoolingState,
+              on
+                  ? Characteristic.TargetHeatingCoolingState.COOL
+                  : Characteristic.TargetHeatingCoolingState.OFF
+          );
+          this.service?.updateCharacteristic(
+              Characteristic.CurrentHeatingCoolingState,
+              on
+                  ? Characteristic.CurrentHeatingCoolingState.COOL
+                  : Characteristic.CurrentHeatingCoolingState.OFF
+          );
+
+          if (!this.debouncer.allow()) {
+            setTimeout(() => this.refreshState().catch(() => {}), 500);
+            return;
+          }
+
+          try {
+            if (on) {
+              // 전원 ON 시 현재 목표온도를 함께 전송
+              await this.controlMany([
+                ["POWER", "ON"],
+                ["HTEMPERATURE", this.cachedTargetTemp],
+              ]);
+            } else {
+              // 전원 OFF는 POWER만 전송
+              await this.controlMany([["POWER", "OFF"]]);
+            }
+
+            // 켜질 때 UI 상태를 COOL로 즉시 강제
+            if (on) {
+              this.service?.updateCharacteristic(
+                  Characteristic.TargetHeatingCoolingState,
+                  Characteristic.TargetHeatingCoolingState.COOL
+              );
+            }
+          } finally {
+            // 제어 결과와 무관하게 다단계 재조회(서버 반영 지연/실패 대응)
+            setTimeout(() => this.refreshState().catch(() => {}), 450);
+            setTimeout(() => this.refreshState().catch(() => {}), 1400);
+          }
+        }
+
+        // HomeKit에서 목표 모드 조회 시 호출(OFF/COOL만 제공)
+        async handleGetTargetHcState() {
+          return this.cachedActive
+              ? Characteristic.TargetHeatingCoolingState.COOL
+              : Characteristic.TargetHeatingCoolingState.OFF;
+        }
+
+        // HomeKit에서 목표 모드 변경 시 호출
+        async handleSetTargetHcState(value) {
+          const v = Number(value);
+
+          // OFF는 그대로 유지
+          if (v === Characteristic.TargetHeatingCoolingState.OFF) {
+            await this.handleSetActive(0);
+            return;
+          }
+
+          // HEAT/COOL/AUTO 모두 COOL로 처리(난방/자동 미지원)
+          await this.handleSetActive(1);
+
+          // UI를 COOL로 강제
+          this.service?.updateCharacteristic(
+              Characteristic.TargetHeatingCoolingState,
+              Characteristic.TargetHeatingCoolingState.COOL
+          );
+        }
+
+        // HomeKit에서 현재 동작 상태 조회 시 호출
+        async handleGetCurrentHcState() {
+          return this.cachedActive
+              ? Characteristic.CurrentHeatingCoolingState.COOL
+              : Characteristic.CurrentHeatingCoolingState.OFF;
+        }
+
+        // 에어컨 상태를 강제로 재조회하여 캐시/표시 동기화
+        async refreshState() {
+          if (this.refreshPromise) return this.refreshPromise;
+
+          this.refreshPromise = (async () => {
+          try {
+            const payload = await this.fetchAirConditioner();
+            const a = this.extractAttrs(payload);
+            if (!a) return;
+            this.lastStateAt = Date.now();
+
+            const ht = Number(a.HT);
+            if (Number.isFinite(ht) && ht >= 18 && ht <= 30) {
+              const pendingTarget =
+                  this.pendingTargetTemp !== null &&
+                  Date.now() < this.pendingTargetTempUntil &&
+                  ht !== this.pendingTargetTemp;
+              if (!pendingTarget) {
+                this.cachedTargetTemp = ht;
+                if (
+                    this.pendingTargetTemp !== null &&
+                    ht === this.pendingTargetTemp
+                ) {
+                  this.pendingTargetTemp = null;
+                }
+              }
+            }
+
+            const ct = Number(a.CT);
+            if (Number.isFinite(ct) && ct > 0) this.cachedCurrentTemp = ct;
+
+            if (a.POWER === "ON" || a.POWER === "OFF") {
+              const serverActive = a.POWER === "ON";
+              const pendingActive =
+                  this.pendingActive !== null &&
+                  Date.now() < this.pendingActiveUntil &&
+                  serverActive !== this.pendingActive;
+              if (!pendingActive) {
+                this.cachedActive = serverActive;
+                if (
+                    this.pendingActive !== null &&
+                    serverActive === this.pendingActive
+                ) {
+                  this.pendingActive = null;
+                }
+              }
+            }
+
+            this.service?.updateCharacteristic(
+                Characteristic.TargetTemperature,
+                this.cachedTargetTemp
+            );
+            this.service?.updateCharacteristic(
+                Characteristic.CurrentTemperature,
+                this.cachedCurrentTemp
+            );
+            this.service?.updateCharacteristic(
+                Characteristic.Active,
+                this.cachedActive ? 1 : 0
+            );
+            this.service?.updateCharacteristic(
+                Characteristic.CurrentHeatingCoolingState,
+                this.cachedActive
+                    ? Characteristic.CurrentHeatingCoolingState.COOL
+                    : Characteristic.CurrentHeatingCoolingState.OFF
+            );
+            this.service?.updateCharacteristic(
+                Characteristic.TargetHeatingCoolingState,
+                this.cachedActive
+                    ? Characteristic.TargetHeatingCoolingState.COOL
+                    : Characteristic.TargetHeatingCoolingState.OFF
+            );
+          } catch {
+            // 폴링 실패는 무시(다음 주기에 재시도)
+          }
+          })();
+
+          try {
+            await this.refreshPromise;
+          } finally {
+            this.refreshPromise = null;
           }
         }
       }
